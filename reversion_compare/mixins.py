@@ -8,7 +8,9 @@
     :license: GNU GPL v3 or above, see LICENSE for more details.
 """
 
-from django.db import models
+import json
+
+from django.db import models, transaction
 from django.template.loader import render_to_string
 
 from reversion_compare.helpers import html_diff
@@ -20,11 +22,13 @@ class CompareMixin(object, ):
     """A mixin to add comparison capabilities to your views"""
     
     revision_manager = default_revision_manager
-    # list/tuple of field names for the compare view. Set to None for all existing fields
+    # list/tuple of field names or props for the compare view. Set to None for all existing fields
     compare_fields = None
+    compare_props = None
 
-    # list/tuple of field names to exclude from compare view.
+    # list/tuple of field names or props to exclude from compare view.
     compare_exclude = None
+    compare_exclude_props = None
 
     # sort from new to old as default, see: https://github.com/etianen/django-reversion/issues/77
     history_latest_first = True
@@ -89,17 +93,14 @@ class CompareMixin(object, ):
         # Create a list of all normal fields and append many-to-many fields
         fields = [field for field in obj._meta.fields]
         concrete_model = obj._meta.concrete_model
+        properties = [name for name in dir(concrete_model)
+                          if isinstance(getattr(concrete_model, name), property)]
         fields += concrete_model._meta.many_to_many
 
         # This gathers the related reverse ForeignKey fields, so we can do ManyToOne compares
         self.reverse_fields = []
         # From: http://stackoverflow.com/questions/19512187/django-list-all-reverse-relations-of-a-model
-        for field_name in obj._meta.get_all_field_names():
-            f = getattr(
-                obj._meta.get_field_by_name(field_name)[0],
-                'field',
-                None
-            )
+        for f in obj._meta.get_fields():
             if isinstance(f, models.ForeignKey) and f not in fields:
                 self.reverse_fields.append(f.rel)
         #print(self.reverse_fields)
@@ -140,6 +141,36 @@ class CompareMixin(object, ):
                 "follow": follow,
                 "diff": html,
             })
+
+        for prop_name in properties:
+            if self.compare_props and prop_name not in self.compare_props:
+                continue
+            if self.compare_exclude_props and prop_name in self.compare_exclude_props:
+                continue
+            prop_value = getattr(obj, prop_name)
+            json1 = None
+            json2 = None
+            try:
+                with transaction.atomic():
+                    version1.revision.revert(delete=True)
+                    prop_value = getattr(version1.object_version.object, prop_name)
+                    json1 = json.dumps(prop_value, indent=4)
+                    version2.revision.revert(delete=True)
+                    prop_value = getattr(version2.object_version.object, prop_name)
+                    json2 = json.dumps(prop_value, indent=4)
+                    raise Exception  # Raise an exception to undo the transaction and the revision.
+            except Exception:
+                pass
+            if json1 != json2:
+                html = html_diff(json1, json2)
+                try:
+                    prop_name = concrete_model.PropertiesMeta.verbose[prop_name]
+                except:
+                    prop_name = capitalize(prop_name)
+                diff.append({
+                    'name': prop_name,
+                    'diff': html,
+                })
 
         return diff, has_unfollowed_fields
 
