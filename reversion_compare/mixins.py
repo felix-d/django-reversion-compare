@@ -166,7 +166,7 @@ class CompareMixin(object, ):
                 try:
                     prop_name = concrete_model.PropertiesMeta.verbose[prop_name]
                 except:
-                    prop_name = capitalize(prop_name)
+                    prop_name = str.capitalize(prop_name)
                 diff.append({
                     'name': prop_name,
                     'diff': html,
